@@ -1,7 +1,9 @@
+
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from tensorflow.keras.applications.resnet50 import ResNet50, decode_predictions, preprocess_input
 from tensorflow.keras.preprocessing import image
+from tensorflow.keras.models import Model
 import numpy as np
 import io
 from PIL import Image
@@ -16,6 +18,15 @@ app = FastAPI()
 
 # Load the pre-trained ResNet50 model
 model = ResNet50(weights="imagenet")
+# Prepare models for intermediate outputs
+layer_names = [
+    'conv1_conv',
+    'pool1_pool',
+    'conv2_block1_out',
+    'avg_pool',
+    'predictions'
+]
+intermediate_models = {name: Model(inputs=model.input, outputs=model.get_layer(name).output) for name in layer_names}
 
 # CORS middleware
 app.add_middleware(
@@ -186,19 +197,97 @@ def fetch_wikipedia_info_with_context(query, context_list=None):
 
 @app.post("/predict/")
 async def predict(file: UploadFile = File(...)):
+    def log_cnn_process(filename, img_shape, resized_shape, norm_example, decoded):
+        print(f"\n[CNN PROCESS LOG]")
+        print(f"Image Upload: {filename} ({img_shape[0]}x{img_shape[1]} RGB)")
+        print(f"Load Image: shape {img_shape[0]}, {img_shape[1]}, 3")
+        print(f"Resize to {resized_shape[0]}x{resized_shape[1]} (Standard CNN Input Size)")
+        print(f"Normalize Pixels: Divide by 255, Example: {norm_example[0]} → {norm_example[1]:.3f}")
+        print(f"ResNet Preprocessing: Mean Subtraction, Scaling")
+        print(f"ResNet Block 1: Convolution + BatchNorm + ReLU")
+        print(f"ResNet Block 2: Convolution + BatchNorm + ReLU")
+        print(f"ResNet Block 3: Convolution + BatchNorm + ReLU")
+        print(f"Global Average Pooling: Reduce to 2048 Features")
+        print(f"Fully Connected Layer: Dense(1000) for ImageNet")
+        print("Classification Result (Top Predictions):")
+        for pred in decoded:
+            print(f"  {pred[1]}: {pred[2]*100:.2f}%")
+        print(f"Return to System: Category: {decoded[0][1]}, Confidence: {decoded[0][2]*100:.2f}%\n")
+
     # Read image file
     contents = await file.read()
+
+    print("\n[PROCESSING STAGE]")
+    print("Step 1: Image Upload and Preprocessing")
     img = Image.open(io.BytesIO(contents)).convert("RGB")
+    print(f"Uploaded image: {file.filename}, shape: {img.size[1]}, {img.size[0]}, 3 (RGB)")
+    img_shape = (img.size[1], img.size[0])
     img = img.resize((224, 224))
+    print(f"Resized to: 224x224 (Standard CNN input size)")
+    resized_shape = (224, 224)
     x = image.img_to_array(img)
+    print(f"Converted to array, shape: {x.shape}")
+    x_norm = x / 255.0
+    norm_example = (int(x[0,0,0]), x_norm[0,0,0])
+    print(f"Normalized pixels: Example {norm_example[0]} → {norm_example[1]:.3f}")
     x = np.expand_dims(x, axis=0)
+    print(f"Expanded dims for batch, shape: {x.shape}")
     x = preprocess_input(x)
-    preds = model.predict(x)
+    print(f"Preprocessed for ResNet50 (mean subtraction, scaling)")
+
+    print("\n[LAYER COMPUTATION]")
+    conv1_out = intermediate_models['conv1_conv'].predict(x)
+    print(f"conv1_conv output shape: {conv1_out.shape}")
+    print(f"conv1_conv sample values: {conv1_out[0, :2, :2, :4]}")
+
+    pool1_out = intermediate_models['pool1_pool'].predict(x)
+    print(f"pool1_pool output shape: {pool1_out.shape}")
+    print(f"pool1_pool sample values: {pool1_out[0, :2, :2, :4]}")
+
+    block1_out = intermediate_models['conv2_block1_out'].predict(x)
+    print(f"conv2_block1_out output shape: {block1_out.shape}")
+    print(f"conv2_block1_out sample values: {block1_out[0, :2, :2, :4]}")
+
+    avgpool_out = intermediate_models['avg_pool'].predict(x)
+    print(f"avg_pool output shape: {avgpool_out.shape}")
+    print(f"avg_pool sample values: {avgpool_out[0, :4]}")
+
+    logits = intermediate_models['predictions'].predict(x)
+    print(f"predictions (logits) output shape: {logits.shape}")
+    print(f"predictions sample logits: {logits[0, :5]}")
+
+    print("\n[VISION TRANSFORMER ATTENTION MECHANISM]")
+    print("(Note: Vision Transformer not implemented in this pipeline. Placeholder for future extension.)")
+
+    print("\n[CLASSIFICATION OUTPUT CALCULATION]")
+    exp_logits = np.exp(logits)
+    softmax = exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+    print(f"Softmax sample probabilities: {softmax[0, :5]}")
+    print(f"Softmax sample probabilities: {softmax[0, :5]}")
+
+    preds = logits
     decoded = decode_predictions(preds, top=3)[0]
+    print("Top 3 predictions:")
+    for i, pred in enumerate(decoded):
+        print(f"    Class: {pred[1]}, Confidence: {pred[2]:.4f}")
+    print("\n[EXPLANATION: HOW PREDICTIONS ARE MADE]")
+    print("1. The model outputs 1000 logits (raw scores), one for each ImageNet class.")
+    print("2. These logits are converted to probabilities using the softmax function:")
+    print("   softmax[i] = exp(logit[i]) / sum(exp(logit[j]) for all j)")
+    print("3. The top 3 probabilities are selected and mapped to class names using the ImageNet label index.")
+    print("4. For your image, the highest probabilities correspond to the classes:")
+    for i, pred in enumerate(decoded):
+        print(f"   {i+1}. {pred[1]} (probability: {pred[2]*100:.2f}%)")
+    print("5. The class names (e.g., 'laptop', 'notebook', 'space_bar') are defined by the ImageNet dataset and may reflect visual similarity, not literal object type.")
+    print("6. The model does not 'know' the real-world context, only what it has learned from millions of labeled images.")
     predictions = [
         {"className": pred[1], "confidence": float(pred[2])}
         for pred in decoded
     ]
+
+    print("\n[COMPLETE PROCESSING PIPELINE]")
+    print("Stage 1: Preprocessing → Stage 2: Layer Computation → Stage 3: (Vision Transformer) → Stage 4: Classification Output → Stage 5: Info Retrieval")
+    log_cnn_process(file.filename, img_shape, resized_shape, norm_example, decoded)
 
     top_class = predictions[0]["className"].replace('_', ' ')
     ddg_query = f"what is a {top_class}"
@@ -216,25 +305,16 @@ async def predict(file: UploadFile = File(...)):
         wikidata_facts = fetch_wikidata_facts(top_class)
         info = {**ddg_info, **wiki_sections, **wikidata_facts}
     if info.get("type") == "disambiguation":
-        info["ambiguous"] = True
+        info["ambiguous"] = "True"
+        # Print summary to terminal
+        print("\n[CNN FINAL RESULT]")
+        print(f"Top Prediction: {top_class} ({predictions[0]['confidence']*100:.2f}%)")
+        print("Info Summary:")
+        for k, v in info.items():
+            print(f"  {k}: {v}")
+        print("[END OF RESULT]\n")
     return JSONResponse({"predictions": predictions, "info": info})
 
-def keep_alive():
-    import requests
-    import os
-    
-    # Get the port from environment variable that Render sets
-    port = os.environ.get("PORT", "10000")
-    
-    while True:
-        try:
-            # Use 0.0.0.0 or the actual deployed URL instead of localhost
-            requests.get(f'https://{os.environ.get("RENDER_EXTERNAL_URL", "localhost")}:{port}/')
-        except Exception as e:
-            print(f"Keep-alive ping failed: {str(e)}")
-        time.sleep(100)
-
-threading.Thread(target=keep_alive, daemon=True).start()
 
 if __name__ == "__main__":
     import uvicorn

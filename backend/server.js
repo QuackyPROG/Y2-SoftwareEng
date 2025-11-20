@@ -12,6 +12,7 @@ const app = express()
 const allowedOrigins = (process.env.CORS_ORIGIN || '').split(',').map(o => o.trim());
 app.use(cors({
   origin: function(origin, callback) {
+    console.log('CORS check: allowedOrigins =', allowedOrigins, 'incoming origin =', origin);
     // allow requests with no origin (like mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
